@@ -1,0 +1,30 @@
+# dependencies
+node_modules
+
+# environment
+.env
+.env.*
+!.env.example
+
+# builds
+.next
+dist
+build
+coverage
+
+# system
+.DS_Store
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# Claude local files
+.claude/settings.local.json
+.claude/worktrees/
+
+# editor/temp
+.tmp
+.cache
