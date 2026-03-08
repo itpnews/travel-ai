@@ -1,0 +1,17 @@
+{
+  "name": "@travel-ai/routing",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@travel-ai/types": "workspace:*",
+    "@travel-ai/utils": "workspace:*",
+    "p-limit": "^3.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

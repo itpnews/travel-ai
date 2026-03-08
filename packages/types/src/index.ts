@@ -40,12 +40,23 @@ export type RouteWarningCode =
   | 'HIGH_DISRUPTION_RISK'
   | 'MANY_SEGMENTS'
   | 'ALTERNATE_DATE'
-  | 'AIRPORT_TRANSFER_REQUIRED';
+  | 'AIRPORT_TRANSFER_REQUIRED'
+  | 'ASSEMBLED_ROUTE';
 
 export interface RouteWarning {
   code: RouteWarningCode;
   message: string;           // plain language shown in UI
   severity: 'info' | 'warn' | 'critical';
+}
+
+/**
+ * A group of flights that must be purchased as a single booking.
+ * Only present on routes where bookingMode === 'separate_tickets'.
+ */
+export interface BookingGroup {
+  id: string;
+  flightIds: string[];
+  carrier?: string;               // IATA code of the marketing carrier for this booking
 }
 
 /** Public route — what the API returns and the UI consumes. */
@@ -57,7 +68,12 @@ export interface Route {
   currency: string;
   actualDepartureDate: string;    // "YYYY-MM-DD"
   dateDeltaDays: number;          // -3..+3
-  source: 'provider' | 'generated';
+  /** Where this route came from: direct provider result or hub-fallback assembly */
+  source: 'provider' | 'fallback';
+  /** How the route must be purchased */
+  bookingMode: 'single_booking' | 'separate_tickets';
+  /** Present only when bookingMode === 'separate_tickets' */
+  bookingGroups?: BookingGroup[];
   budgetBand: BudgetBand;
   fragilityLabel: FragilityLabel;
   /** Sort key for normal mode — do NOT display */
@@ -70,6 +86,10 @@ export interface Route {
   summary: string;
   warnings: RouteWarning[];
 }
+
+// ─── Static data (re-exported for consumers) ──────────────────────────────────
+
+export * from './static.js';
 
 // ─── Static data types ────────────────────────────────────────────────────────
 
