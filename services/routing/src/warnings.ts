@@ -198,7 +198,8 @@ export function generateWarnings(route: Route): RouteWarning[] {
   }
 
   // ── VISA_RISK ──────────────────────────────────────────────────────────────
-  // Intentionally deferred. Requires passport-of-origin data not yet available.
+  // Removed from warnings. Visa and transit checks are now handled by
+  // checkFeasibility() in feasibility.ts, which has access to TravelerProfile.
 
   return warnings;
 }
