@@ -13,7 +13,6 @@
       "Bash(node -v)",
       "Bash(npm -v)"
     ],
-
     "deny": [
       "Read(.env)",
       "Read(.env.*)",
@@ -21,5 +20,10 @@
       "Bash(rm -rf /)",
       "Bash(curl *)"
     ]
+  },
+
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "60000",
+    "BASH_MAX_TIMEOUT_MS": "300000"
   }
 }
