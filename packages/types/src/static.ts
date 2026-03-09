@@ -1,4 +1,8 @@
-import type { Hub, CountryRisk, SafeModeConfig } from './index.js';
+import type {
+  Hub, CountryRisk, SafeModeConfig,
+  SearchMode, SearchModeConfig,
+  VisaRule, TransitRule, CountryAccessRule,
+} from './index.js';
 
 // ─── Routing Constraints ──────────────────────────────────────────────────────
 
@@ -390,3 +394,22 @@ export const DEFAULT_SAFE_MODE_CONFIG: SafeModeConfig = {
   visaRiskPenalty: 0.20,
   longFlightPenalty: 0.10,
 };
+
+// ─── Search Mode Configs ──────────────────────────────────────────────────────
+// Both standard modes and urgent_get_me_home share the same search envelope.
+// urgent_get_me_home differs via relaxedFeasibility, not deeper graph search.
+
+export const SEARCH_MODE_CONFIGS: Record<SearchMode, SearchModeConfig> = {
+  best_overall:       { maxHubs: 2, maxFlightSegments: 4, maxFallbackDepth: 1, relaxedFeasibility: false },
+  safest:             { maxHubs: 2, maxFlightSegments: 4, maxFallbackDepth: 1, relaxedFeasibility: false },
+  best_value:         { maxHubs: 2, maxFlightSegments: 4, maxFallbackDepth: 1, relaxedFeasibility: false },
+  fastest_home:       { maxHubs: 2, maxFlightSegments: 4, maxFallbackDepth: 1, relaxedFeasibility: false },
+  urgent_get_me_home: { maxHubs: 2, maxFlightSegments: 4, maxFallbackDepth: 1, relaxedFeasibility: true  },
+};
+
+// ─── Feasibility Rule Tables ──────────────────────────────────────────────────
+// Empty at MVP. Populated when rule data is sourced.
+
+export const VISA_RULES: VisaRule[] = [];
+export const TRANSIT_RULES: TransitRule[] = [];
+export const COUNTRY_ACCESS_RULES: CountryAccessRule[] = [];

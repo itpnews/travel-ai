@@ -10,6 +10,8 @@ export interface SearchParams {
 
 // ─── Flight ───────────────────────────────────────────────────────────────────
 
+export type CabinClass = 'economy' | 'premium_economy' | 'business' | 'first';
+
 export interface Flight {
   id: string;
   origin: string;
@@ -19,7 +21,7 @@ export interface Flight {
   carrier: string;         // airline IATA code
   flightNumber: string;
   durationMinutes: number;
-  cabinClass: 'economy' | 'premium_economy' | 'business' | 'first';
+  cabinClass: CabinClass;
 }
 
 // ─── Route ────────────────────────────────────────────────────────────────────
@@ -32,9 +34,9 @@ export type BudgetBand = 'cheapest' | 'balanced' | 'flexible' | 'over';
  */
 export type FragilityLabel = 'low' | 'medium' | 'high' | 'critical';
 
+// VISA_RISK removed — visa/transit checks now handled in feasibility (VISA_BLOCKED, TRANSIT_NOT_ALLOWED)
 export type RouteWarningCode =
   | 'LONG_TRAVEL_TIME'
-  | 'VISA_RISK'
   | 'BUDGET_OVERRUN'
   | 'UNREALISTIC_CONNECTION'
   | 'HIGH_DISRUPTION_RISK'
@@ -85,6 +87,134 @@ export interface Route {
   /** One-sentence plain-language explanation */
   summary: string;
   warnings: RouteWarning[];
+}
+
+// ─── Traveler Profile ─────────────────────────────────────────────────────────
+
+export interface TravelerProfile {
+  passportCountry: string;       // ISO 3166-1 alpha-2 — drives visa/transit checks
+  blockedCountries?: string[];   // ISO 3166-1 alpha-2 — route must not enter these
+  maxBudget?: number;            // hard ceiling, in search currency
+  maxTotalDurationHours?: number;// hard ceiling; overrides system default when set
+  /**
+   * If false, this traveler will not take assembled (separate-ticket) routes.
+   * Treated as a blocking constraint in standard search modes.
+   * In urgent_get_me_home, this constraint becomes non-blocking — the route
+   * is still surfaced, but the violation is propagated to scoring.
+   */
+  willingSeparateTickets: boolean;
+  /**
+   * If false, this traveler will not use routes that require an airport transfer.
+   * Treated as a blocking constraint in standard search modes.
+   * In urgent_get_me_home, this constraint becomes non-blocking — the route
+   * is still surfaced, but the violation is propagated to scoring.
+   */
+  allowAirportTransfers: boolean;
+}
+
+// ─── Search Mode ──────────────────────────────────────────────────────────────
+
+export type SearchMode =
+  | 'best_overall'
+  | 'safest'
+  | 'best_value'
+  | 'fastest_home'
+  | 'urgent_get_me_home';
+
+export interface SearchModeConfig {
+  /** Hub candidates evaluated in fallback routing. */
+  maxHubs: number;
+  /** Hard segment cap for routes in this mode. */
+  maxFlightSegments: number;
+  /**
+   * Hub-to-hub fallback layers.
+   * Extensibility hook: future emergency routing may increase this for urgent_get_me_home.
+   */
+  maxFallbackDepth: number;
+  /**
+   * When true (urgent_get_me_home), soft feasibility violations do not block the route.
+   * Violations are still recorded in FeasibilityResult.violations and propagated to
+   * scoring and ranking — they are not ignored, just no longer gatekeepers.
+   */
+  relaxedFeasibility: boolean;
+}
+
+// ─── Search Request ───────────────────────────────────────────────────────────
+
+/** Top-level engine input. Replaces bare SearchParams at the engine boundary. */
+export interface SearchRequest {
+  params: SearchParams;
+  traveler: TravelerProfile;
+  mode: SearchMode;
+}
+
+// ─── Static Rule Types ────────────────────────────────────────────────────────
+
+export interface VisaRule {
+  passportCountry: string;        // ISO 3166-1 alpha-2
+  destinationCountry: string;     // ISO 3166-1 alpha-2
+  requiresVisa: boolean;
+  airsideTransitAllowed: boolean;
+}
+
+export interface TransitRule {
+  passportCountry: string;        // ISO 3166-1 alpha-2
+  transitCountry: string;         // ISO 3166-1 alpha-2
+  /** false → entry visa required even for airside transit */
+  airsideTransitAllowed: boolean;
+}
+
+/**
+ * Country access restriction for a given passport country.
+ * status drives the feasibility decision; reason provides context.
+ */
+export interface CountryAccessRule {
+  passportCountry: string;        // ISO 3166-1 alpha-2
+  targetCountry: string;          // ISO 3166-1 alpha-2
+  status: 'blocked' | 'restricted' | 'advisory';
+  reason: 'sanctions' | 'bilateral_block' | 'entry_ban' | 'travel_warning';
+}
+
+// ─── Feasibility ──────────────────────────────────────────────────────────────
+
+export type FeasibilityConstraintCode =
+  | 'VISA_BLOCKED'
+  | 'TRANSIT_NOT_ALLOWED'
+  | 'BLOCKED_COUNTRY'
+  | 'BUDGET_EXCEEDED'
+  | 'DURATION_EXCEEDED'
+  | 'SEPARATE_TICKETS_NOT_ALLOWED'
+  | 'AIRPORT_TRANSFER_NOT_ALLOWED';
+
+export interface FeasibilityViolation {
+  constraint: FeasibilityConstraintCode;
+  reason: string;              // plain-language explanation
+  /** hard: always blocks; soft: blocks in standard modes, propagated in urgent */
+  severity: 'hard' | 'soft';
+}
+
+export type FeasibilityStatus = 'feasible' | 'restricted' | 'blocked';
+
+/**
+ * Pipeline-internal. Never attached to Route or SearchResult.
+ * violations is always populated when violations exist, regardless of status.
+ * Scoring and ranking stages receive violations for soft-penalty computation.
+ */
+export interface FeasibilityResult {
+  status: FeasibilityStatus;
+  violations: FeasibilityViolation[];
+}
+
+// ─── Route Risk ───────────────────────────────────────────────────────────────
+
+export type RouteRiskLabel = 'low' | 'moderate' | 'high' | 'critical';
+
+export interface RouteRiskResult {
+  /** Aggregate operational risk score 0..1 from COUNTRY_RISKS, transit + destination only */
+  riskScore: number;
+  riskLabel: RouteRiskLabel;
+  /** ISO 3166-1 alpha-2 codes of elevated-risk countries on route (origin excluded) */
+  highRiskCountries: string[];
 }
 
 // ─── Static data (re-exported for consumers) ──────────────────────────────────
@@ -146,7 +276,7 @@ export interface SearchResult {
   params: SearchParams;
   /** Sorted by score descending; max ROUTING_CONSTRAINTS.maxRoutesReturned */
   routes: Route[];
-  safeMode: boolean;
+  mode: SearchMode;
   generatedAt: string;
   errors?: RoutingError[];
 }
