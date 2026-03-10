@@ -172,9 +172,14 @@ export function generateWarnings(route: Route): RouteWarning[] {
   // Evaluate transit airports + destination only. The origin is excluded: the
   // traveller is departing from there and disruption risk at home base is not
   // actionable in the context of route selection.
+  //
+  // Guard: if route.flights is empty (should not happen after engine filtering,
+  // but possible in tests or future callers) return current warnings unchanged.
+  const originIata = route.flights[0]?.origin ?? '';
+  if (!originIata) return warnings;
+
   let maxRiskScore = 0;
   const seenCountries = new Set<string>();
-  const originIata = route.flights[0].origin;
 
   for (const flight of route.flights) {
     for (const iata of [flight.origin, flight.destination]) {

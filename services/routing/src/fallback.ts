@@ -398,7 +398,9 @@ export function selectCandidateHubs(
   }
 
   return candidates
-    .sort((a, b) => b.priority - a.priority)
+    // Secondary tiebreaker on IATA code ensures deterministic ordering when
+    // two hubs share an identical priority score.
+    .sort((a, b) => b.priority - a.priority || a.airport.localeCompare(b.airport))
     .slice(0, limit);
 }
 
@@ -497,6 +499,10 @@ export function isValidConnection(
   if (departureMs <= arrivalMs) return false;
 
   const layoverMinutes = (departureMs - arrivalMs) / 60_000;
+
+  // Reject connections with non-finite layover (malformed timestamps yield NaN,
+  // which would silently pass all numeric comparisons below).
+  if (!isFinite(layoverMinutes)) return false;
 
   // Maximum layover cap
   if (layoverMinutes > MAX_LAYOVER_MINUTES) return false;
@@ -625,7 +631,9 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   const a    =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
+  // Clamp to [0, 1] before asin: floating-point drift can produce values like
+  // 1.0000000000000002, which Math.asin() turns into NaN.
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(Math.max(0, a))));
 }
 
 function toRad(deg: number): number {
