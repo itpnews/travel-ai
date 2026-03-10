@@ -8,5 +8,8 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "dev": "pnpm --filter @travel-ai/web dev"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }
