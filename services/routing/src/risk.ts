@@ -66,9 +66,13 @@ export function computeRouteRisk(route: Route): RouteRiskResult {
     }
   }
 
+  // Clamp to [0, 1] so data errors in COUNTRY_RISKS cannot produce out-of-range
+  // riskScore values that would corrupt scoring (1 - riskScore can go negative).
+  const finalScore = Math.min(1, Math.max(0, maxRiskScore));
+
   return {
-    riskScore:        maxRiskScore,
-    riskLabel:        deriveLabel(maxRiskScore),
+    riskScore:        finalScore,
+    riskLabel:        deriveLabel(finalScore),
     highRiskCountries,
   };
 }

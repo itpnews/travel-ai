@@ -220,13 +220,16 @@ export function scoreRoute(
   const w = MODE_WEIGHTS[mode];
 
   // ── Individual factor goodness values (0..1, 1 = best) ──────────────────────
-  const priceGoodness     = computePriceScore(route.totalPrice, ctx, traveler);
-  const durationGoodness  = computeDurationScore(route.totalDurationMinutes, ctx);
-  const fragilityGoodness = 1 - fragility.fragilityScore;
-  const riskGoodness      = 1 - risk.riskScore;
+  // Each factor is wrapped in finite() so a NaN from a sub-computation cannot
+  // corrupt the weighted sum. dateDeltaGoodness is additionally clamped to [0,1]
+  // because |dateDeltaDays| > 3 would otherwise produce a negative value.
+  const priceGoodness     = finite(computePriceScore(route.totalPrice, ctx, traveler), 0);
+  const durationGoodness  = finite(computeDurationScore(route.totalDurationMinutes, ctx), 0);
+  const fragilityGoodness = finite(1 - fragility.fragilityScore, 0);
+  const riskGoodness      = finite(1 - risk.riskScore, 0);
   const segmentCount      = Math.min(Math.max(route.flights.length, 1), 4);
   const segmentGoodness   = SEGMENT_GOODNESS[segmentCount] ?? 0.15;
-  const dateDeltaGoodness = 1 - Math.abs(route.dateDeltaDays) / 3;
+  const dateDeltaGoodness = clamp(1 - Math.abs(route.dateDeltaDays) / 3, 0, 1);
 
   // ── Weighted sum ─────────────────────────────────────────────────────────────
   const weighted =
@@ -364,7 +367,18 @@ function computeDurationScore(durationMinutes: number, ctx: ScoringContext): num
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function clamp(value: number, min: number, max: number): number {
+  // Guard NaN/Infinity: Math.max/min propagate NaN silently.
+  if (!isFinite(value)) return min;
   return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Returns `value` if it is a finite number, otherwise `fallback`.
+ * Applied to every scoring factor before the weighted sum to prevent
+ * NaN from a single factor corrupting the entire score.
+ */
+function finite(value: number, fallback: number): number {
+  return isFinite(value) ? value : fallback;
 }
 
 function percentile(sorted: number[], p: number): number {

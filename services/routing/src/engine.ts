@@ -25,6 +25,7 @@ import {
   type ScoringCandidate,
 } from './score.js';
 import { shouldRunFallback, generateFallbackRoutes } from './fallback.js';
+import { EngineTrace } from './trace.js';
 
 // ─── Engine entry point ───────────────────────────────────────────────────────
 
@@ -66,6 +67,7 @@ export async function search(
 ): Promise<SearchResult> {
   const { params, traveler, mode } = request;
   const errors: RoutingError[] = [];
+  const trace = new EngineTrace();
 
   // ── 1. Validate ──────────────────────────────────────────────────────────────
   const validationErrors = validateSearchParams(params);
@@ -100,6 +102,8 @@ export async function search(
   // hub-leg fetch phase. No provider calls can occur outside this scheduler.
   const scheduler = new ProviderScheduler();
 
+  trace.begin('providerFetch');
+
   const fetchPromises = dates.map(date =>
     fetchWithCache(
       params.origin,
@@ -133,6 +137,8 @@ export async function search(
     }
   }
 
+  trace.end('providerFetch', { calls: dates.length, offers: allOffers.length });
+
   // Record the error but do NOT return — fallback (step 8) may still produce
   // viable routes even when the provider returns nothing.
   if (allOffers.length === 0) {
@@ -151,9 +157,11 @@ export async function search(
   }
 
   // ── 4. Dedup (provider) ──────────────────────────────────────────────────────
+  trace.begin('dedup');
   const dedupedProviderRoutes = deduplicateRoutes(providerRoutes);
+  trace.end('dedup', { before: providerRoutes.length, after: dedupedProviderRoutes.length });
 
-  // ── 5–6. Feasibility → warnings → fragility → risk (provider) ───────────────
+  // ── 5–7. Feasibility → warnings → fragility → risk → score (provider) ────────
   //
   // checkFeasibility evaluates each route against the traveler profile and
   // mode config using only static rule data + route fields (no pre-computed
@@ -166,9 +174,6 @@ export async function search(
   //
   // Warnings, fragility, and risk are computed only on surviving routes —
   // there is no value in computing these for blocked routes.
-  const providerCandidates = buildCandidates(dedupedProviderRoutes, traveler, mode);
-
-  // ── 7. Score (provider routes — preliminary) ─────────────────────────────────
   //
   // Scoring is run on provider routes before the fallback decision so that
   // bestProviderScore is available for the score-based activation threshold.
@@ -178,7 +183,10 @@ export async function search(
   //
   // Scoring context (price percentiles, duration range) is derived exclusively
   // from routes that survived feasibility filtering.
+  trace.begin('feasibility+scoring');
+  const providerCandidates = buildCandidates(dedupedProviderRoutes, traveler, mode);
   scoreAll(providerCandidates, mode, traveler);
+  trace.end('feasibility+scoring', { scored: providerCandidates.length });
 
   // ── 8. Fallback ──────────────────────────────────────────────────────────────
   //
@@ -206,6 +214,8 @@ export async function search(
   let candidates: ScoringCandidate[];
 
   if (shouldRunFallback(providerCandidates.length, bestProviderScore)) {
+    trace.begin('fallback');
+
     const fallbackRoutes = await generateFallbackRoutes(
       {
         origin:      params.origin,
@@ -238,6 +248,8 @@ export async function search(
       }
       scoreAll(candidates, mode, traveler);
     }
+
+    trace.end('fallback', { routesAdded: fallbackRoutes.length, total: candidates.length });
   } else {
     // Fallback not needed — provider routes already scored in step 7.
     candidates = providerCandidates;
@@ -256,11 +268,17 @@ export async function search(
 
   // ── 9. Rank ──────────────────────────────────────────────────────────────────
   // Sorted by route.score descending. safeScore is never used as a sort key.
+  // Secondary tiebreaker on route.id ensures deterministic ordering when two
+  // routes share an identical score (JS sort is stable but needs a tiebreaker
+  // to guarantee the same result across engine runs).
+  trace.begin('ranking');
   const ranked = candidates
     .map(c => c.route)
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
     .slice(0, ROUTING_CONSTRAINTS.maxRoutesReturned);
+  trace.end('ranking', { total: ranked.length });
 
+  trace.summary();
   return makeResult(request, ranked, errors.length > 0 ? errors : undefined);
 }
 
@@ -319,9 +337,24 @@ function scoreAll(
   if (candidates.length === 0) return;
   const ctx = buildScoringContext(candidates);
   for (const candidate of candidates) {
-    const { score, safeScore }    = scoreRoute(candidate, mode, ctx, traveler);
-    candidate.route.score         = score;
-    candidate.route.safeScore     = safeScore;
+    const { score, safeScore } = scoreRoute(candidate, mode, ctx, traveler);
+
+    // Pipeline invariant: non-finite scores must never reach the ranking sort.
+    // scoreRoute's clamp() guards should prevent this, but we enforce it here
+    // as a last line of defence so future changes cannot silently break ranking.
+    if (!isFinite(score)) {
+      console.warn(`[engine] route ${candidate.route.id} produced non-finite score (${score}); clamped to 0`);
+      candidate.route.score = 0;
+    } else {
+      candidate.route.score = score;
+    }
+
+    if (!isFinite(safeScore)) {
+      console.warn(`[engine] route ${candidate.route.id} produced non-finite safeScore (${safeScore}); clamped to 0`);
+      candidate.route.safeScore = 0;
+    } else {
+      candidate.route.safeScore = safeScore;
+    }
   }
 }
 
