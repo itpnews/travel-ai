@@ -8,7 +8,7 @@ import type {
 
 export const ROUTING_CONSTRAINTS = {
   // Provider call budget
-  maxProviderCallsPerSearch: 15,    // hard cap; cache hits do NOT count
+  maxProviderCallsPerSearch: 20,    // hard cap; cache hits do NOT count
   parallelProviderRequests: 3,      // concurrency via p-limit
 
   // Route thresholds
