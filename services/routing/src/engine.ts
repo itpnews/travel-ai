@@ -24,6 +24,7 @@ import {
   buildSummary,
   type ScoringCandidate,
 } from './score.js';
+import { shouldRunFallback, generateFallbackRoutes } from './fallback.js';
 
 // ─── Engine entry point ───────────────────────────────────────────────────────
 
@@ -31,22 +32,32 @@ import {
  * End-to-end routing pipeline for a single SearchRequest.
  *
  * Pipeline:
- *   1. validate params
- *   2. build date window (±flexDateWindowDays, past dates excluded)
- *   3. fetch + cache  — scheduler is the single authority for provider call
- *                       budget and concurrency. Promise.all dispatches all date
- *                       fetches concurrently, but each fetch is wrapped in
- *                       scheduler.schedule() so the p-limit limiter controls
- *                       how many run in parallel, and the budget counter prevents
- *                       more than maxProviderCallsPerSearch total calls.
- *                       Cache hits bypass the scheduler entirely.
- *   4. dedup          — keep best route per unique flight sequence
- *   5. feasibility    — blocked routes removed; restricted routes continue
- *                       downstream with soft violations attached to scoring
- *   6. warnings + fragility + route risk (computed on surviving routes only)
- *   7. score          — mode-weighted; context built from surviving candidates
- *   8. rank           — sorted by route.score descending (never by safeScore)
- *   9. return SearchResult
+ *   1.  validate params
+ *   2.  build date window (±flexDateWindowDays, past dates excluded)
+ *   3.  fetch + cache  — scheduler is the single authority for provider call
+ *                        budget and concurrency. Promise.all dispatches all date
+ *                        fetches concurrently, but each fetch is wrapped in
+ *                        scheduler.schedule() so the p-limit limiter controls
+ *                        how many run in parallel, and the budget counter prevents
+ *                        more than maxProviderCallsPerSearch total calls.
+ *                        Cache hits bypass the scheduler entirely.
+ *   4.  dedup          — keep best route per unique flight sequence
+ *   5.  feasibility    — blocked routes removed; restricted routes continue
+ *                        downstream with soft violations attached to scoring
+ *   6.  warnings + fragility + route risk (computed on surviving routes only)
+ *   7.  score          — preliminary pass on provider routes only; required to
+ *                        evaluate the score-based fallback activation threshold
+ *   8.  fallback       — triggered when provider results are insufficient by
+ *                        count or quality (shouldRunFallback). Fallback routes
+ *                        are assembled hub-by-hub using the same scheduler.
+ *                        The merged set (provider + fallback) then re-runs the
+ *                        full sub-pipeline: dedup → feasibility → warnings →
+ *                        fragility → risk → score, so both sources are evaluated
+ *                        under a unified scoring context and budget distribution.
+ *                        When fallback does not trigger, provider routes already
+ *                        scored in step 7 proceed directly to ranking.
+ *   9.  rank           — sorted by route.score descending (never by safeScore)
+ *  10.  return SearchResult
  */
 export async function search(
   request: SearchRequest,
@@ -71,7 +82,7 @@ export async function search(
   // ── 3. Fetch + cache ─────────────────────────────────────────────────────────
   //
   // scheduler.schedule() is the single authority for:
-  //   - Provider call budget: callsUsed vs maxProviderCallsPerSearch (15).
+  //   - Provider call budget: callsUsed vs maxProviderCallsPerSearch.
   //     Budget is consumed at scheduling time. Once exhausted, schedule()
   //     returns null immediately without calling the provider.
   //   - Concurrency: p-limit(parallelProviderRequests = 3) inside the scheduler
@@ -83,6 +94,10 @@ export async function search(
   //
   // Cache hits return the cached value directly, before schedule() is reached,
   // and do NOT consume a budget slot.
+  //
+  // The scheduler instance is created once here and reused by fallback (step 8),
+  // so the single budget cap covers both the provider fetch phase and the
+  // hub-leg fetch phase. No provider calls can occur outside this scheduler.
   const scheduler = new ProviderScheduler();
 
   const fetchPromises = dates.map(date =>
@@ -118,21 +133,27 @@ export async function search(
     }
   }
 
+  // Record the error but do NOT return — fallback (step 8) may still produce
+  // viable routes even when the provider returns nothing.
   if (allOffers.length === 0) {
     errors.push({ code: 'NO_PROVIDER_RESULTS', message: 'All provider fetches returned no offers.' });
-    return makeResult(request, [], errors);
   }
 
-  // ── Map offers to routes ─────────────────────────────────────────────────────
+  // ── Map provider offers to routes ────────────────────────────────────────────
   // Budget bands require a global minPrice, so routes are built after all
-  // offers are collected.
-  const minPrice = Math.min(...allOffers.map(o => o.totalPrice));
-  const routes = allOffers.map(offer => offerToRoute(offer, params.departureDate, minPrice));
+  // offers are collected. Empty when allOffers is empty.
+  const providerRoutes: Route[] = [];
+  if (allOffers.length > 0) {
+    const minPrice = Math.min(...allOffers.map(o => o.totalPrice));
+    for (const offer of allOffers) {
+      providerRoutes.push(offerToRoute(offer, params.departureDate, minPrice));
+    }
+  }
 
-  // ── 4. Dedup ─────────────────────────────────────────────────────────────────
-  const dedupedRoutes = deduplicateRoutes(routes);
+  // ── 4. Dedup (provider) ──────────────────────────────────────────────────────
+  const dedupedProviderRoutes = deduplicateRoutes(providerRoutes);
 
-  // ── 5. Feasibility filtering ─────────────────────────────────────────────────
+  // ── 5–6. Feasibility → warnings → fragility → risk (provider) ───────────────
   //
   // checkFeasibility evaluates each route against the traveler profile and
   // mode config using only static rule data + route fields (no pre-computed
@@ -145,21 +166,130 @@ export async function search(
   //
   // Warnings, fragility, and risk are computed only on surviving routes —
   // there is no value in computing these for blocked routes.
+  const providerCandidates = buildCandidates(dedupedProviderRoutes, traveler, mode);
+
+  // ── 7. Score (provider routes — preliminary) ─────────────────────────────────
+  //
+  // Scoring is run on provider routes before the fallback decision so that
+  // bestProviderScore is available for the score-based activation threshold.
+  // If fallback is not triggered, these scores are final and used directly for
+  // ranking. If fallback is triggered, all candidates are re-scored together
+  // under a unified context after the merge (step 8).
+  //
+  // Scoring context (price percentiles, duration range) is derived exclusively
+  // from routes that survived feasibility filtering.
+  scoreAll(providerCandidates, mode, traveler);
+
+  // ── 8. Fallback ──────────────────────────────────────────────────────────────
+  //
+  // Activation rule (any condition triggers fallback):
+  //   a. No provider routes survived feasibility filtering.
+  //   b. Provider route count < MIN_ROUTE_COUNT (result set too thin to rank).
+  //   c. Best provider route score < MIN_ACCEPTABLE_SCORE (poor quality).
+  //
+  // When triggered:
+  //   - Fallback routes are assembled hub-by-hub via the same scheduler,
+  //     consuming from the shared budget. No direct adapter calls occur outside
+  //     scheduler.schedule().
+  //   - The fallback routes are merged with the (deduped) provider routes.
+  //   - The merged set re-runs the full sub-pipeline so provider and fallback
+  //     routes are evaluated under the same scoring context:
+  //       dedup → feasibility → warnings → fragility → risk → score
+  //   - Budget bands are recomputed after the merge so the global minPrice
+  //     reflects the combined price distribution of both sources.
+  //
+  // When not triggered: providerCandidates (already scored) go straight to rank.
+  const bestProviderScore = providerCandidates.length > 0
+    ? Math.max(...providerCandidates.map(c => c.route.score))
+    : 0;
+
+  let candidates: ScoringCandidate[];
+
+  if (shouldRunFallback(providerCandidates.length, bestProviderScore)) {
+    const fallbackRoutes = await generateFallbackRoutes(
+      {
+        origin:      params.origin,
+        destination: params.destination,
+        date:        params.departureDate,
+        passengers:  params.passengers,
+        currency:    params.currency,
+        mode,
+      },
+      adapter,
+      cache,
+      scheduler,
+    );
+
+    // Merge and re-run the full sub-pipeline on the combined set.
+    // Placing dedupedProviderRoutes first ensures that when a fallback route
+    // duplicates a provider route, deduplicateRoutes keeps the provider version
+    // (smaller |dateDeltaDays| wins; ties favour the first occurrence).
+    const mergedRoutes  = [...dedupedProviderRoutes, ...fallbackRoutes];
+    const mergedDeduped = deduplicateRoutes(mergedRoutes);
+
+    candidates = buildCandidates(mergedDeduped, traveler, mode);
+
+    // Recompute budget bands with the unified minPrice before scoring so the
+    // price distribution reflects both sources equally.
+    if (candidates.length > 0) {
+      const unifiedMinPrice = Math.min(...candidates.map(c => c.route.totalPrice));
+      for (const c of candidates) {
+        c.route.budgetBand = computeBudgetBand(c.route.totalPrice, unifiedMinPrice);
+      }
+      scoreAll(candidates, mode, traveler);
+    }
+  } else {
+    // Fallback not needed — provider routes already scored in step 7.
+    candidates = providerCandidates;
+  }
+
+  if (candidates.length === 0) {
+    errors.push({ code: 'NO_ROUTES_FOUND', message: 'No viable routes after feasibility filtering.' });
+    return makeResult(request, [], errors);
+  }
+
+  // ── Presentation helpers (temporary; isolated from core scoring logic) ────────
+  assignRouteLabels(candidates, mode);
+  for (const candidate of candidates) {
+    candidate.route.summary = buildSummary(candidate.route, mode);
+  }
+
+  // ── 9. Rank ──────────────────────────────────────────────────────────────────
+  // Sorted by route.score descending. safeScore is never used as a sort key.
+  const ranked = candidates
+    .map(c => c.route)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, ROUTING_CONSTRAINTS.maxRoutesReturned);
+
+  return makeResult(request, ranked, errors.length > 0 ? errors : undefined);
+}
+
+// ─── Pipeline helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Runs a list of routes through feasibility → warnings → fragility → risk,
+ * returning only surviving (non-blocked) routes as ScoringCandidates.
+ *
+ * Used for both the provider-only pass (step 5–6) and the merged pass (step 8).
+ * Pure in the sense that it only reads route data and static rule tables —
+ * it mutates route.warnings and route.fragilityLabel as pipeline side-effects,
+ * matching the existing convention in the engine.
+ */
+function buildCandidates(
+  routes: Route[],
+  traveler: Parameters<typeof checkFeasibility>[1],
+  mode: Parameters<typeof checkFeasibility>[2],
+): ScoringCandidate[] {
   const candidates: ScoringCandidate[] = [];
 
-  for (const route of dedupedRoutes) {
+  for (const route of routes) {
     const feasibility = checkFeasibility(route, traveler, mode);
     if (feasibility.status === 'blocked') continue;
 
-    // ── 6a. Warnings (depends only on route static data) ──────────────────────
-    route.warnings = generateWarnings(route);
-
-    // ── 6b. Fragility (depends on warnings for transfer detection) ────────────
-    const fragility = computeFragility(route, route.warnings);
+    route.warnings       = generateWarnings(route);
+    const fragility      = computeFragility(route, route.warnings);
     route.fragilityLabel = fragility.fragilityLabel;
-
-    // ── 6c. Route risk (geopolitical / operational) ────────────────────────────
-    const risk = computeRouteRisk(route);
+    const risk           = computeRouteRisk(route);
 
     candidates.push({
       route,
@@ -171,38 +301,28 @@ export async function search(
     });
   }
 
-  if (candidates.length === 0) {
-    errors.push({ code: 'NO_ROUTES_FOUND', message: 'No viable routes after feasibility filtering.' });
-    return makeResult(request, [], errors);
-  }
+  return candidates;
+}
 
-  // ── 7. Score ─────────────────────────────────────────────────────────────────
-  //
-  // Scoring context (price percentiles, duration range) is derived exclusively
-  // from routes that survived feasibility filtering — blocked routes do not
-  // distort the reference distribution.
+/**
+ * Scores all candidates in-place using a scoring context derived from the
+ * full candidate set. Both route.score and route.safeScore are overwritten.
+ *
+ * Used for both the provider-only preliminary pass (step 7) and the unified
+ * re-score after fallback merge (step 8).
+ */
+function scoreAll(
+  candidates: ScoringCandidate[],
+  mode: Parameters<typeof scoreRoute>[1],
+  traveler: Parameters<typeof scoreRoute>[3],
+): void {
+  if (candidates.length === 0) return;
   const ctx = buildScoringContext(candidates);
-
   for (const candidate of candidates) {
-    const { score, safeScore } = scoreRoute(candidate, mode, ctx, traveler);
-    candidate.route.score     = score;
-    candidate.route.safeScore = safeScore;
+    const { score, safeScore }    = scoreRoute(candidate, mode, ctx, traveler);
+    candidate.route.score         = score;
+    candidate.route.safeScore     = safeScore;
   }
-
-  // ── Presentation helpers (temporary; isolated from core scoring logic) ────────
-  assignRouteLabels(candidates, mode);
-  for (const candidate of candidates) {
-    candidate.route.summary = buildSummary(candidate.route, mode);
-  }
-
-  // ── 8. Rank ──────────────────────────────────────────────────────────────────
-  // Sorted by route.score descending. safeScore is never used as a sort key.
-  const ranked = candidates
-    .map(c => c.route)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, ROUTING_CONSTRAINTS.maxRoutesReturned);
-
-  return makeResult(request, ranked, errors.length > 0 ? errors : undefined);
 }
 
 // ─── Fetch with cache ─────────────────────────────────────────────────────────

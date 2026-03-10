@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sample-search": "tsx scripts/sample-search.ts"
   },
   "dependencies": {
     "@travel-ai/types": "workspace:*",
@@ -12,6 +13,7 @@
     "p-limit": "^3.1.0"
   },
   "devDependencies": {
+    "tsx": "^4.19.2",
     "typescript": "^5.4.0"
   }
 }
