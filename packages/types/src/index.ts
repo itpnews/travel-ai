@@ -43,7 +43,11 @@ export type RouteWarningCode =
   | 'MANY_SEGMENTS'
   | 'ALTERNATE_DATE'
   | 'AIRPORT_TRANSFER_REQUIRED'
-  | 'ASSEMBLED_ROUTE';
+  | 'ASSEMBLED_ROUTE'
+  /** Risky-but-feasible short connection; between min threshold and comfortable buffer. */
+  | 'SHORT_CONNECTION'
+  /** Layover exceeds max_reasonable_layover; flags overnight and extended stopovers. */
+  | 'LONG_LAYOVER';
 
 export interface RouteWarning {
   code: RouteWarningCode;
@@ -184,7 +188,9 @@ export type FeasibilityConstraintCode =
   | 'BUDGET_EXCEEDED'
   | 'DURATION_EXCEEDED'
   | 'SEPARATE_TICKETS_NOT_ALLOWED'
-  | 'AIRPORT_TRANSFER_NOT_ALLOWED';
+  | 'AIRPORT_TRANSFER_NOT_ALLOWED'
+  /** Hard block: at least one connection has an impossible layover time. */
+  | 'IMPOSSIBLE_CONNECTION';
 
 export interface FeasibilityViolation {
   constraint: FeasibilityConstraintCode;
@@ -203,6 +209,8 @@ export type FeasibilityStatus = 'feasible' | 'restricted' | 'blocked';
 export interface FeasibilityResult {
   status: FeasibilityStatus;
   violations: FeasibilityViolation[];
+  /** Count of risky (but feasible) connections on this route. Propagated to scoring. */
+  riskyConnectionCount: number;
 }
 
 // ─── Route Risk ───────────────────────────────────────────────────────────────

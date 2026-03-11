@@ -20,6 +20,8 @@ export interface ScoringCandidate {
   risk: RouteRiskResult;
   /** Soft violations from checkFeasibility (hard violations are already filtered out). */
   softViolations: FeasibilityViolation[];
+  /** Risky-but-feasible connections; each incurs a score penalty. */
+  riskyConnectionCount: number;
 }
 
 // ─── Scoring Context ──────────────────────────────────────────────────────────
@@ -190,6 +192,19 @@ const SOFT_VIOLATION_PENALTY: Partial<Record<string, number>> = {
   AIRPORT_TRANSFER_NOT_ALLOWED: 0.10,
 };
 
+// ─── Risky connection penalty ─────────────────────────────────────────────────
+
+/**
+ * Score deduction per risky (but feasible) connection.
+ * Capped so a single route with multiple risky connections cannot be penalised
+ * into the same territory as a structurally blocked route.
+ *
+ * Applied after the assembled-route penalty and soft-violation penalty so each
+ * deduction is additive and independently auditable.
+ */
+const RISKY_CONNECTION_PENALTY_PER  = 0.04;
+const RISKY_CONNECTION_PENALTY_CAP  = 0.12;
+
 // ─── Score route ──────────────────────────────────────────────────────────────
 
 /**
@@ -216,7 +231,7 @@ export function scoreRoute(
   ctx: ScoringContext,
   traveler: TravelerProfile,
 ): { score: number; safeScore: number } {
-  const { route, fragility, risk, softViolations } = candidate;
+  const { route, fragility, risk, softViolations, riskyConnectionCount } = candidate;
   const w = MODE_WEIGHTS[mode];
 
   // ── Individual factor goodness values (0..1, 1 = best) ──────────────────────
@@ -253,7 +268,15 @@ export function scoreRoute(
     softPenalty += SOFT_VIOLATION_PENALTY[v.constraint] ?? 0.05;
   }
 
-  const score = clamp(weighted - assembledPenalty - softPenalty, 0, 1);
+  // ── Risky connection penalty ──────────────────────────────────────────────────
+  // Applied per risky connection, capped so multiple risky connections on one
+  // route don't compound beyond a reasonable ceiling.
+  const riskyConnectionPenalty = Math.min(
+    riskyConnectionCount * RISKY_CONNECTION_PENALTY_PER,
+    RISKY_CONNECTION_PENALTY_CAP,
+  );
+
+  const score = clamp(weighted - assembledPenalty - softPenalty - riskyConnectionPenalty, 0, 1);
 
   // ── safeScore (always uses safest weights; used only for labeling) ────────────
   const sw = MODE_WEIGHTS.safest;
@@ -268,7 +291,8 @@ export function scoreRoute(
   const safeScore = clamp(
     safeWeighted
       - (route.bookingMode === 'separate_tickets' ? ASSEMBLED_PENALTY.safest : 0)
-      - softPenalty,
+      - softPenalty
+      - riskyConnectionPenalty,
     0,
     1,
   );

@@ -5,7 +5,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
-    "sample-search": "tsx scripts/sample-search.ts"
+    "sample-search": "tsx scripts/sample-search.ts",
+    "test": "tsx src/__tests__/connection-feasibility.test.ts"
   },
   "dependencies": {
     "@travel-ai/types": "workspace:*",

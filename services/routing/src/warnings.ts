@@ -1,10 +1,10 @@
 import type { Route, RouteWarning } from '@travel-ai/types';
 import {
   AIRPORT_METADATA,
-  CITY_AIRPORTS,
   COUNTRY_RISKS,
 } from '@travel-ai/types';
 import { formatDuration } from '@travel-ai/utils';
+import { assessConnection, DEFAULT_CONNECTION_CONFIG } from './feasibility.js';
 
 // ─── Thresholds ───────────────────────────────────────────────────────────────
 
@@ -18,15 +18,6 @@ const LONG_TRAVEL_MINUTES = 48 * 60;
  */
 const MANY_SEGMENTS_THRESHOLD = 3;
 
-/** Minimum connection at the same airport before the connection is flagged. */
-const MIN_CONNECTION_SAME_AIRPORT_MINUTES = 45;
-
-/**
- * Minimum connection when an airport transfer is required.
- * 90 min accounts for deplaning, ground transfer, and check-in at the next airport.
- */
-const MIN_CONNECTION_TRANSFER_MINUTES = 90;
-
 /** riskScore >= this triggers HIGH_DISRUPTION_RISK at 'warn' severity. */
 const DISRUPTION_WARN_THRESHOLD = 0.50;
 
@@ -34,17 +25,6 @@ const DISRUPTION_WARN_THRESHOLD = 0.50;
 const DISRUPTION_CRITICAL_THRESHOLD = 0.65;
 
 // ─── Module-level static lookups (derived from static data, computed once) ────
-
-/** airport IATA → city metro code (e.g. 'LGW' → 'LON') */
-const AIRPORT_TO_CITY: ReadonlyMap<string, string> = (() => {
-  const map = new Map<string, string>();
-  for (const [city, airports] of Object.entries(CITY_AIRPORTS)) {
-    for (const iata of airports) {
-      map.set(iata, city);
-    }
-  }
-  return map;
-})();
 
 /** ISO country code → operational disruption riskScore */
 const COUNTRY_RISK_MAP: ReadonlyMap<string, number> = new Map(
@@ -118,53 +98,72 @@ export function generateWarnings(route: Route): RouteWarning[] {
     });
   }
 
-  // ── Per-connection checks: UNREALISTIC_CONNECTION + AIRPORT_TRANSFER_REQUIRED
+  // ── Per-connection checks ──────────────────────────────────────────────────
+  //
+  // assessConnection() classifies each connection as impossible/risky/feasible.
+  // impossible → UNREALISTIC_CONNECTION (routes with impossible connections are
+  //              already blocked in checkFeasibility, but we emit the warning
+  //              defensively in case this function is called independently).
+  // risky      → SHORT_CONNECTION (tight timing) or LONG_LAYOVER (excessive wait)
+  // Airport-change connections always emit AIRPORT_TRANSFER_REQUIRED regardless
+  // of timing, since the ground transfer itself is a traveler-facing concern.
   for (let i = 0; i < route.flights.length - 1; i++) {
-    const inbound = route.flights[i];
+    const inbound  = route.flights[i];
     const outbound = route.flights[i + 1];
 
-    const layoverMs =
-      new Date(outbound.departingAt).getTime() -
-      new Date(inbound.arrivingAt).getTime();
-    const layoverMinutes = layoverMs / 60_000;
+    const conn = assessConnection(inbound, outbound, DEFAULT_CONNECTION_CONFIG);
+    const { layoverMinutes, sameAirport, airportChange } = conn;
 
-    const sameAirport = inbound.destination === outbound.origin;
+    // Airport-change: always emit the transfer notice.
+    if (airportChange) {
+      warnings.push({
+        code: 'AIRPORT_TRANSFER_REQUIRED',
+        message:
+          `Your connection requires a ground transfer from ${inbound.destination} to ${outbound.origin}. ` +
+          `Allow extra time to exit the terminal, travel between airports, and re-clear security.`,
+        severity: 'warn',
+      });
+    }
 
-    if (sameAirport) {
-      // Same airport — check minimum connection time.
-      if (layoverMinutes < MIN_CONNECTION_SAME_AIRPORT_MINUTES) {
+    if (conn.assessment === 'impossible') {
+      const context = airportChange
+        ? `for an airport transfer between ${inbound.destination} and ${outbound.origin}`
+        : `to connect at ${inbound.destination}`;
+      warnings.push({
+        code: 'UNREALISTIC_CONNECTION',
+        message:
+          `Only ${Math.round(layoverMinutes)} minutes available ${context} — this is not enough time.`,
+        severity: 'critical',
+      });
+    } else if (conn.assessment === 'risky') {
+      if (layoverMinutes > DEFAULT_CONNECTION_CONFIG.max_reasonable_layover_minutes) {
+        // Long layover: excessive wait, flag as informational.
+        const hours = Math.round(layoverMinutes / 60);
         warnings.push({
-          code: 'UNREALISTIC_CONNECTION',
+          code: 'LONG_LAYOVER',
           message:
-            `Only ${Math.round(layoverMinutes)} minutes to connect at ${inbound.destination}. ` +
-            `This is unlikely to be enough time, particularly for international transfers.`,
-          severity: 'critical',
+            `${hours}-hour layover at ${inbound.destination}. ` +
+            `This is an unusually long connection — consider whether this is intentional.`,
+          severity: 'info',
         });
-      }
-    } else {
-      // Different airports — check whether they serve the same city.
-      const cityA = AIRPORT_TO_CITY.get(inbound.destination);
-      const cityB = AIRPORT_TO_CITY.get(outbound.origin);
-
-      if (cityA !== undefined && cityA === cityB) {
+      } else {
+        // Short but feasible connection — tight timing risk.
+        const minStr = Math.round(layoverMinutes);
+        const context = airportChange
+          ? ` for a transfer between ${inbound.destination} and ${outbound.origin}`
+          : ` at ${inbound.destination}`;
         warnings.push({
-          code: 'AIRPORT_TRANSFER_REQUIRED',
+          code: 'SHORT_CONNECTION',
           message:
-            `Your connection requires a ground transfer from ${inbound.destination} to ${outbound.origin}. ` +
-            `Allow extra time to exit the terminal, travel between airports, and re-clear security.`,
+            `Only ${minStr} minutes${context}. ` +
+            `This connection is tight and may be missed if flights are delayed.`,
           severity: 'warn',
         });
-
-        if (layoverMinutes < MIN_CONNECTION_TRANSFER_MINUTES) {
-          warnings.push({
-            code: 'UNREALISTIC_CONNECTION',
-            message:
-              `Only ${Math.round(layoverMinutes)} minutes are available for an airport transfer ` +
-              `between ${inbound.destination} and ${outbound.origin} — this is not enough time.`,
-            severity: 'critical',
-          });
-        }
       }
+    } else if (!sameAirport && !airportChange) {
+      // Different airports in different cities — should not arise in valid routes,
+      // but guard anyway.
+      void 0;
     }
   }
 
