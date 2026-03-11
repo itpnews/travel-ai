@@ -310,6 +310,73 @@ body {
 }
 .sort-pill-active:hover { background: var(--brand-hover); border-color: var(--brand-hover); color: #fff; }
 
+/* ── Date strip ─────────────────────────────────────────────────────────────── */
+
+.date-strip {
+  display: flex;
+  gap: .35rem;
+  overflow-x: auto;
+  padding: .25rem 0 .5rem;
+  margin-bottom: .85rem;
+  scrollbar-width: none;           /* Firefox */
+}
+.date-strip::-webkit-scrollbar { display: none; }
+
+.date-option {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .15rem;
+  padding: .45rem .65rem;
+  min-width: 4.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  text-align: center;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.date-option:hover:not(:disabled):not(.date-option-active) {
+  background: var(--surface-hover);
+  border-color: var(--border-hover);
+}
+.date-option-active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+.date-option-active:hover {
+  background: var(--brand-hover);
+  border-color: var(--brand-hover);
+}
+.date-option-empty { opacity: .4; cursor: default; }
+
+.date-option-day {
+  font-size: .6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-3);
+}
+.date-option-active .date-option-day { color: rgba(255,255,255,.7); }
+
+.date-option-num {
+  font-size: .72rem;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+.date-option-active .date-option-num { color: #fff; }
+
+.date-option-price {
+  font-size: .65rem;
+  color: var(--brand);
+  font-weight: 500;
+}
+.date-option-active .date-option-price { color: rgba(255,255,255,.9); }
+.date-option-empty  .date-option-price { color: var(--text-3); }
+
 /* ── Results controls (summary + sort pills row) ───────────────────────────── */
 
 .results-controls {
