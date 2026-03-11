@@ -29,6 +29,13 @@ export interface Flight {
 export type BudgetBand = 'cheapest' | 'balanced' | 'flexible' | 'over';
 
 /**
+ * Quality of the worst connection on a multi-segment route.
+ * Derived by the enrichment layer from minimum layover duration.
+ * undefined for nonstop routes.
+ */
+export type ConnectionQuality = 'safe' | 'tight' | 'risky' | 'impossible';
+
+/**
  * Internal values. UI maps to user-readable strings:
  * low → "Reliable", medium → "Moderate", high → "Risky", critical → "Very risky"
  */
@@ -47,7 +54,11 @@ export type RouteWarningCode =
   /** Risky-but-feasible short connection; between min threshold and comfortable buffer. */
   | 'SHORT_CONNECTION'
   /** Layover exceeds max_reasonable_layover; flags overnight and extended stopovers. */
-  | 'LONG_LAYOVER';
+  | 'LONG_LAYOVER'
+  /** 90–179 min layover — feasible but leaves limited delay buffer. */
+  | 'TIGHT_CONNECTION'
+  /** < 45 min layover — connection is almost certainly unmakeable. */
+  | 'RISKY_ITINERARY';
 
 export interface RouteWarning {
   code: RouteWarningCode;
@@ -91,6 +102,15 @@ export interface Route {
   /** One-sentence plain-language explanation */
   summary: string;
   warnings: RouteWarning[];
+  // ── Enrichment fields (optional; undefined when enrichment not run) ──────
+  /** Quality of the worst connection. undefined for nonstop routes. */
+  connectionQuality?: ConnectionQuality;
+  /** Minimum layover duration in minutes. undefined for nonstop routes. */
+  minLayoverMinutes?: number;
+  /** True when consecutive flights depart from different airports (e.g. LGW → LHR). */
+  requiresAirportTransfer?: boolean;
+  /** Human-readable explanation of why this route appears at its rank position. */
+  whyRankedHere?: string;
 }
 
 // ─── Traveler Profile ─────────────────────────────────────────────────────────
