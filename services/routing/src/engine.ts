@@ -7,7 +7,7 @@ import type {
   Flight,
 } from '@travel-ai/types';
 import { ROUTING_CONSTRAINTS } from '@travel-ai/types';
-import { validateSearchParams } from './sanity.js';
+import { validateSearchParams, sanityCheckFinalRoutes } from './sanity.js';
 import { buildDateWindow } from './dates.js';
 import { ProviderScheduler } from './scheduler.js';
 import { RouteCache, makeCacheKey } from './cache.js';
@@ -278,6 +278,12 @@ export async function search(
     .slice(0, ROUTING_CONSTRAINTS.maxRoutesReturned);
   trace.end('ranking', { total: ranked.length });
 
+  // ── Invariant check ───────────────────────────────────────────────────────────
+  // Validates that no impossible connections escaped feasibility filtering and
+  // that risky connections are properly flagged. Logs warnings only — does not
+  // alter the result set. Silent in production; useful during development.
+  sanityCheckFinalRoutes(ranked);
+
   trace.summary();
   return makeResult(request, ranked, errors.length > 0 ? errors : undefined);
 }
@@ -316,6 +322,7 @@ function buildCandidates(
       // Hard violations are already handled (route would be blocked).
       // Only soft violations reach here, and only in urgent_get_me_home.
       softViolations: feasibility.violations.filter(v => v.severity === 'soft'),
+      riskyConnectionCount: feasibility.riskyConnectionCount,
     });
   }
 
