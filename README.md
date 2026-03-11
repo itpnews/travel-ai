@@ -33,3 +33,56 @@ Implemented layers:
 ---
 
 ## Repository Structure
+services/routing/
+src/
+airport-selection.ts
+city-airports.ts
+geo-policy.ts
+corridor-heuristics.ts
+overland-continuation.ts
+explanation-engine.ts
+schedule-index.ts
+flight-graph.ts
+connection-patterns.ts
+search-frontier.ts
+
+
+---
+
+## Running locally
+
+pnpm install
+pnpm build
+pnpm –filter @travel-ai/routing sample-search
+
+
+Debug mode:
+
+TRAVEL_AI_DEBUG=1 pnpm –filter @travel-ai/routing sample-search
+
+---
+
+## Goals of the project
+
+This project investigates how to design a routing system capable of:
+
+- surviving large-scale airline disruptions
+- routing around geopolitical constraints
+- exploring millions of route combinations efficiently
+- remaining deterministic and explainable
+
+---
+
+## Inspiration
+
+- Google Flights
+- ITA Matrix
+- airline schedule planning systems
+- evacuation / disruption routing systems
+
+---
+
+## License
+
+MIT
+
