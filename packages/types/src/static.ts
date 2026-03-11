@@ -192,6 +192,7 @@ export const CITY_AIRPORTS: Record<string, string[]> = {
   CPH: ['CPH', 'MMX'],
   OSL: ['OSL', 'TRF', 'RYG'],
   MOW: ['SVO', 'DME', 'VKO'],
+  WAW: ['WAW', 'WMI'],
 };
 
 // ─── Airport Metadata ─────────────────────────────────────────────────────────
@@ -252,6 +253,7 @@ export const AIRPORT_METADATA: Record<string, { country: string; lat: number; ln
   HEL: { country: 'FI', lat: 60.3172,  lng: 24.9633  },
   // Poland
   WAW: { country: 'PL', lat: 52.1672,  lng: 20.9679  },
+  WMI: { country: 'PL', lat: 52.4511,  lng: 20.6517  },
   KRK: { country: 'PL', lat: 50.0777,  lng: 19.7847  },
   // Greece
   ATH: { country: 'GR', lat: 37.9364,  lng: 23.9445  },
