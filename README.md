@@ -1,3 +1,7 @@
+![Status](https://img.shields.io/badge/status-experimental-orange)
+![Language](https://img.shields.io/badge/language-typescript-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 # Travel-AI Routing Engine
 
 Experimental disruption-aware flight routing engine inspired by ITA Matrix and Google Flights.
@@ -85,4 +89,5 @@ This project investigates how to design a routing system capable of:
 ## License
 
 MIT
+
 
